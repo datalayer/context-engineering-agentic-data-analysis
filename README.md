@@ -4,9 +4,7 @@
 
 # ☰ 🧪 Context Engineering for Agentic Data Analysis
 
-See https://datalayer.ai/research/context-optimized-agents.
-
-The detailed work is formalized in this GitHub repository: https://github.com/datalayer/context-engineering-agentic-data-analysis
+See [Research section on Datalayer AI](https://datalayer.ai/research/context-optimized-agents).
 
 ## Automated Evals In GitHub Actions
 
