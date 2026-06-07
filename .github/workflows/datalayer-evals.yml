@@ -1,0 +1,217 @@
+name: datalayer-evals
+
+on:
+  workflow_dispatch:
+    inputs:
+      no_codemode_spec_file:
+        description: Path to evalset spec file for no-codemode setup.
+        required: false
+        default: codemode-simple-1/no-codemode.evalset.json
+        type: string
+      codemode_spec_file:
+        description: Path to evalset spec file for codemode-enabled setup.
+        required: false
+        default: codemode-simple-1/codemode.evalset.json
+        type: string
+      run_limit:
+        description: Runs fetched per experiment.
+        required: false
+        default: "50"
+        type: string
+      ai_agents_url:
+        description: Optional AI Agents base URL override.
+        required: false
+        default: ""
+        type: string
+      account_uid:
+        description: Optional account/org UID context.
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Datalayer CLI
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install datalayer-core
+
+      - name: Create evalsets from specs
+        id: create_evalsets
+        shell: bash
+        env:
+          SPEC_A: ${{ inputs.no_codemode_spec_file }}
+          SPEC_B: ${{ inputs.codemode_spec_file }}
+          TOKEN: ${{ secrets.DATALAYER_API_KEY }}
+          AI_AGENTS_URL: ${{ inputs.ai_agents_url }}
+          ACCOUNT_UID: ${{ inputs.account_uid }}
+        run: |
+          python - << 'PY'
+          import json
+          import os
+          import shlex
+          import subprocess
+          import sys
+
+          def create_evalset(spec_path: str) -> str:
+              cmd = [
+                  'datalayer',
+                  'evals',
+                  'evalsets',
+                  'create',
+                  '--spec-file',
+                  spec_path,
+                  '--raw',
+                  '--token',
+                  os.environ['TOKEN'],
+              ]
+              ai_agents_url = (os.environ.get('AI_AGENTS_URL') or '').strip()
+              account_uid = (os.environ.get('ACCOUNT_UID') or '').strip()
+              if ai_agents_url:
+                  cmd.extend(['--ai-agents-url', ai_agents_url])
+              if account_uid:
+                  cmd.extend(['--account-uid', account_uid])
+
+              print('Running:', ' '.join(shlex.quote(p) for p in cmd))
+              proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              print(proc.stdout or '', end='')
+              if proc.returncode != 0:
+                  raise RuntimeError(f'Failed creating evalset from {spec_path}')
+
+              last_line = ''
+              for line in reversed((proc.stdout or '').splitlines()):
+                  if line.strip():
+                      last_line = line.strip()
+                      break
+              payload = json.loads(last_line)
+              evalset_id = str(((payload.get('evalset') or {}).get('id') or '')).strip()
+              if not evalset_id:
+                  raise RuntimeError(f'No evalset.id returned for spec {spec_path}')
+              return evalset_id
+
+          evalset_a = create_evalset(os.environ['SPEC_A'])
+          evalset_b = create_evalset(os.environ['SPEC_B'])
+
+          output_path = os.environ.get('GITHUB_OUTPUT', '')
+          if output_path:
+              with open(output_path, 'a', encoding='utf-8') as stream:
+                  stream.write(f'evalset_a={evalset_a}\n')
+                  stream.write(f'evalset_b={evalset_b}\n')
+
+          print('Primary evalset:', evalset_a)
+          print('Secondary evalset:', evalset_b)
+          PY
+
+      - name: No codemode evals
+        id: no_codemode
+        uses: datalayer/github-actions@main
+        with:
+          evalset-id: ${{ steps.create_evalsets.outputs.evalset_a }}
+          token: ${{ secrets.DATALAYER_API_KEY }}
+          run-limit: ${{ inputs.run_limit }}
+          ai-agents-url: ${{ inputs.ai_agents_url }}
+          account-uid: ${{ inputs.account_uid }}
+          output-markdown: artifacts/no-codemode-report.md
+          export-csv: "true"
+
+      - name: Codemode evals
+        id: codemode
+        uses: datalayer/github-actions@main
+        with:
+          evalset-id: ${{ steps.create_evalsets.outputs.evalset_b }}
+          token: ${{ secrets.DATALAYER_API_KEY }}
+          run-limit: ${{ inputs.run_limit }}
+          ai-agents-url: ${{ inputs.ai_agents_url }}
+          account-uid: ${{ inputs.account_uid }}
+          output-markdown: artifacts/codemode-report.md
+          export-csv: "true"
+
+      - name: Compare no-codemode vs codemode
+        shell: bash
+        run: |
+          python - << 'PY'
+          import csv
+          from pathlib import Path
+
+          no_csv = Path('artifacts/no-codemode-report.csv')
+          code_csv = Path('artifacts/codemode-report.csv')
+          summary_path = Path('artifacts/comparison-summary.md')
+
+          def load_latest(values_path: Path):
+              if not values_path.exists():
+                  return []
+              rows = list(csv.DictReader(values_path.open('r', encoding='utf-8')))
+              return [r for r in rows if r.get('row_type') == 'experiment']
+
+          no_rows = load_latest(no_csv)
+          code_rows = load_latest(code_csv)
+
+          def avg_latest(rows):
+              vals = []
+              for row in rows:
+                  raw = row.get('latest_pass_rate', '')
+                  try:
+                      vals.append(float(raw))
+                  except Exception:
+                      pass
+              return sum(vals) / len(vals) if vals else None
+
+          no_avg = avg_latest(no_rows)
+          code_avg = avg_latest(code_rows)
+
+          lines = []
+          lines.append('# Codemode Comparison Summary')
+          lines.append('')
+          lines.append(f'- No codemode experiments: {len(no_rows)}')
+          lines.append(f'- Codemode experiments: {len(code_rows)}')
+          lines.append('')
+          lines.append('| Group | Avg latest pass rate |')
+          lines.append('|---|---:|')
+          lines.append(f"| No codemode | {f'{no_avg*100:.1f}%' if no_avg is not None else 'n/a'} |")
+          lines.append(f"| Codemode | {f'{code_avg*100:.1f}%' if code_avg is not None else 'n/a'} |")
+          if no_avg is not None and code_avg is not None:
+              delta = code_avg - no_avg
+              lines.append(f"| Delta (Codemode - No codemode) | {delta*100:+.1f} pts |")
+          lines.append('')
+          lines.append('Notes:')
+          lines.append('- Use the same tools and skills in both evalsets.')
+          lines.append('- Only codemode should differ between the two groups.')
+
+          summary_path.parent.mkdir(parents=True, exist_ok=True)
+          summary_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(summary_path.read_text(encoding='utf-8'))
+          PY
+
+      - name: Upload eval artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: datalayer-evals-artifacts
+          path: |
+            artifacts/no-codemode-report.md
+            artifacts/no-codemode-report.csv
+            artifacts/no-codemode-report.md.log
+            ${{ steps.no_codemode.outputs['timestamped-report-file'] }}
+            ${{ steps.no_codemode.outputs['timestamped-csv-file'] }}
+            artifacts/codemode-report.md
+            artifacts/codemode-report.csv
+            artifacts/codemode-report.md.log
+            ${{ steps.codemode.outputs['timestamped-report-file'] }}
+            ${{ steps.codemode.outputs['timestamped-csv-file'] }}
+            artifacts/comparison-summary.md
+
+      - name: Add summary to workflow
+        shell: bash
+        run: |
+          cat artifacts/comparison-summary.md >> "$GITHUB_STEP_SUMMARY"
