@@ -23,8 +23,8 @@ on:
         required: false
         default: ""
         type: string
-      account_uid:
-        description: Optional account/org UID context.
+      billable_account_uid:
+        description: Optional billable account UID context.
         required: false
         default: ""
         type: string
@@ -54,9 +54,9 @@ jobs:
         env:
           SPEC_A: ${{ inputs.no_codemode_spec_file }}
           SPEC_B: ${{ inputs.codemode_spec_file }}
-          TOKEN: ${{ secrets.DATALAYER_API_KEY }}
+          API_KEY: ${{ secrets.DATALAYER_API_KEY }}
           AI_AGENTS_URL: ${{ inputs.ai_agents_url }}
-          ACCOUNT_UID: ${{ inputs.account_uid }}
+          BILLABLE_ACCOUNT_UID: ${{ inputs.billable_account_uid }}
         run: |
           python - << 'PY'
           import json
@@ -66,6 +66,7 @@ jobs:
           import sys
 
           def create_evalset(spec_path: str) -> str:
+              ai_agents_url = (os.environ.get('AI_AGENTS_URL') or '').strip()
               cmd = [
                   'datalayer',
                   'evals',
@@ -74,15 +75,18 @@ jobs:
                   '--spec-file',
                   spec_path,
                   '--raw',
-                  '--token',
-                  os.environ['TOKEN'],
+                  '--api-key',
+                  os.environ['API_KEY'],
               ]
-              ai_agents_url = (os.environ.get('AI_AGENTS_URL') or '').strip()
-              account_uid = (os.environ.get('ACCOUNT_UID') or '').strip()
+
               if ai_agents_url:
-                  cmd.extend(['--ai-agents-url', ai_agents_url])
-              if account_uid:
-                  cmd.extend(['--account-uid', account_uid])
+                  cmd = ['datalayer', '--ai-agents-url', ai_agents_url] + cmd[1:]
+
+              billable_account_uid = (
+                  (os.environ.get('BILLABLE_ACCOUNT_UID') or '').strip()
+              )
+              if billable_account_uid:
+                  cmd.extend(['--billable-account-uid', billable_account_uid])
 
               print('Running:', ' '.join(shlex.quote(p) for p in cmd))
               proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -119,10 +123,10 @@ jobs:
         uses: datalayer/github-actions@main
         with:
           evalset-id: ${{ steps.create_evalsets.outputs.evalset_a }}
-          token: ${{ secrets.DATALAYER_API_KEY }}
+          api-key: ${{ secrets.DATALAYER_API_KEY }}
           run-limit: ${{ inputs.run_limit }}
           ai-agents-url: ${{ inputs.ai_agents_url }}
-          account-uid: ${{ inputs.account_uid }}
+          billable-account-uid: ${{ inputs.billable_account_uid }}
           output-markdown: artifacts/no-codemode-report.md
           export-csv: "true"
 
@@ -131,10 +135,10 @@ jobs:
         uses: datalayer/github-actions@main
         with:
           evalset-id: ${{ steps.create_evalsets.outputs.evalset_b }}
-          token: ${{ secrets.DATALAYER_API_KEY }}
+          api-key: ${{ secrets.DATALAYER_API_KEY }}
           run-limit: ${{ inputs.run_limit }}
           ai-agents-url: ${{ inputs.ai_agents_url }}
-          account-uid: ${{ inputs.account_uid }}
+          billable-account-uid: ${{ inputs.billable_account_uid }}
           output-markdown: artifacts/codemode-report.md
           export-csv: "true"
 

@@ -23,13 +23,15 @@ The workflow now creates evalsets from two spec files in this repository:
 1. Add repository secret DATALAYER_API_KEY.
 2. Review or customize the two evalset spec files under codemode-simple-1/.
 
+The workflow uses API key naming (`api-key`) when invoking the Datalayer GitHub Action.
+
 ### Run
 
 Trigger the datalayer-evals workflow manually with:
 
 - no_codemode_spec_file (optional override)
 - codemode_spec_file (optional override)
-- optional run_limit, ai_agents_url, account_uid
+- optional run_limit, ai_agents_url, billable_account_uid
 
 ### Outputs
 
